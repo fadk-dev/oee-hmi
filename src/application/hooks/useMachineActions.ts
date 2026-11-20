@@ -17,6 +17,7 @@ import type { ManageAlarmsUseCase } from '../use-cases/ManageAlarmsUseCase';
 import type { MachineCommandUseCase } from '../use-cases/MachineCommandUseCase';
 import { buildJobConfigPayload, deriveActualRate } from '../use-cases/MachineCommandUseCase';
 import { canMutate } from '../capabilityGate';
+import { STATION_SENSITIVE_DENIAL } from '../stationMode';
 import type { LabelDowntimeReasonUseCase } from '../use-cases/LabelDowntimeReasonUseCase';
 import type { ExportTelemetryUseCase, TelemetryExportFormat } from '../use-cases/ExportTelemetryUseCase';
 
@@ -40,6 +41,8 @@ export interface MachineActionsDeps {
   /** FR-007/008: capability + access-mode gate (fail-closed). */
   capabilities: import('../../domain/ports/IOeeBackend').CapabilityMap | null;
   mutationsAllowed: boolean | null;
+  /** E30 H30.4 (FAT-252): mode station — apply job config ditolak (admin panel). */
+  isStationMode: boolean;
   /** Operator id untuk atribusi ack server (G4); null = ack lokal saja. */
   getOperatorId?: () => string | null;
   setMachines: React.Dispatch<React.SetStateAction<MachineConfig[]>>;
@@ -84,6 +87,7 @@ export function useMachineActions(deps: MachineActionsDeps): MachineActionsApi {
     runProtected,
     capabilities,
     mutationsAllowed,
+    isStationMode,
     getOperatorId,
     setMachines,
     setAlarms,
@@ -214,6 +218,13 @@ export function useMachineActions(deps: MachineActionsDeps): MachineActionsApi {
     cycleTimeSec?: number,
     shiftOverride?: { shiftStart: string; shiftEnd: string; breakWindow: string; breakMin: number }
   ) => {
+    // E30 H30.4 (FAT-252): mode station — apply job config manual adalah
+    // ubah konfigurasi (aksi sensitif); ditolak sebelum capability gate /
+    // fetch. Alur QR (initiateFromZones) TIDAK memakai fungsi ini — job
+    // config WO QR diterapkan backend saat initiate — jadi penolakan ini
+    // tidak memutus alur logging QR. Supervisor badge/PIN butuh backend
+    // (B30.1/B30.2) — belum ada; jangan ditebak.
+    if (isStationMode) throw new Error(STATION_SENSITIVE_DENIAL);
     const gate = canMutate({ useBackend, mutationsAllowed, capabilities, key: 'work_order.dispatch' });
     if (!gate.allowed) throw new Error(gate.reason);
     if (!currentMachine) return;
@@ -244,7 +255,7 @@ export function useMachineActions(deps: MachineActionsDeps): MachineActionsApi {
       setMachines((prev) => prev.map((m) => (m.id === currentMachineId ? syncedMachine : m)));
       closeMqttModal();
     });
-  }, [runProtected, machineCommandUseCase, currentMachineId, currentMachine, setMachines, closeMqttModal, useBackend, mutationsAllowed, capabilities]);
+  }, [runProtected, machineCommandUseCase, currentMachineId, currentMachine, setMachines, closeMqttModal, useBackend, mutationsAllowed, capabilities, isStationMode]);
 
   return {
     updateMachineStatus,

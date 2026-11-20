@@ -73,6 +73,8 @@ import { canMutate } from '../capabilityGate';
 import { useFleetResync } from './useFleetResync';
 import { pickStationId } from '../stationContext';
 import { resolveSurfaceMode } from '../surfaceMode';
+import { resolveAttributionOperatorId } from '../stationMode';
+import type { StationSession } from '../stationMode';
 import { isLockableSurface } from '../inactivityPolicy';
 import type { SurfaceMode } from '../surfaceMode';
 
@@ -108,6 +110,8 @@ export interface OeeDashboardDeps {
   useBackend: boolean;
   /** env VITE_STATION_ID (composition root membaca env). */
   stationIdEnv: string;
+  /** E30 H30.1: token station env (VITE_API_TOKEN) tersedia. */
+  stationTokenPresent: boolean;
   /** Query ?station= commissioning (presentation membaca router). */
   getQueryStationId?: () => string | null;
 }
@@ -133,6 +137,9 @@ export interface UseOeeDashboardReturn {
   isMqttModalOpen: boolean;
   isAuthModalOpen: boolean;
   authSession: AuthSession | null;
+  /** E30 H30.1: sesi station (kiosk tanpa login); null = bukan mode station. */
+  stationSession: StationSession | null;
+  isStationMode: boolean;
   authError: string;
   labelableDowntimes: DowntimeEvent[];
   supplementalError: string;
@@ -261,6 +268,7 @@ export function useOeeDashboard(deps: OeeDashboardDeps): UseOeeDashboardReturn {
     authGateway,
     useBackend,
     stationIdEnv,
+    stationTokenPresent,
     getQueryStationId,
   } = deps;
 
@@ -270,6 +278,7 @@ export function useOeeDashboard(deps: OeeDashboardDeps): UseOeeDashboardReturn {
     authGateway,
     useBackend,
     stationIdEnv,
+    stationTokenPresent,
     getQueryStationId,
     // Registry dimuat paralel saat boot; kosong = station tak tervalidasi → ''.
     getRegisteredDeviceIds: () => registry.deviceRegistry?.devices.map((d) => d.deviceId) ?? [],
@@ -355,7 +364,14 @@ export function useOeeDashboard(deps: OeeDashboardDeps): UseOeeDashboardReturn {
     runProtected: auth.runProtected as <T>(action: () => Promise<T>) => Promise<T | void>,
     capabilities: auth.capabilities,
     mutationsAllowed: auth.mutationsAllowed,
-    getOperatorId: () => auth.authSession?.operator.id ?? null,
+    isStationMode: auth.isStationMode,
+    // E30 H30.3 (FAT-251): sesi operator menang; mode station memakai
+    // operator WO aktif (OID badge zona QR) — null jujur bila tanpa WO.
+    getOperatorId: () => resolveAttributionOperatorId({
+      operatorSessionId: auth.authSession?.operator.id ?? null,
+      isStationMode: auth.isStationMode,
+      activeWorkOrderOperatorId: machines.currentMachine?.jobConfig?.operatorId ?? null,
+    }),
     setMachines: machines.setMachines,
     setAlarms: machines.setAlarms,
     setLabelableDowntimes: supplemental.setLabelableDowntimes,
@@ -369,6 +385,7 @@ export function useOeeDashboard(deps: OeeDashboardDeps): UseOeeDashboardReturn {
     runProtected: auth.runProtected as <T>(action: () => Promise<T>) => Promise<T | void>,
     capabilities: auth.capabilities,
     mutationsAllowed: auth.mutationsAllowed,
+    isStationMode: auth.isStationMode,
     setMachines: machines.setMachines,
   });
 
@@ -444,6 +461,7 @@ export function useOeeDashboard(deps: OeeDashboardDeps): UseOeeDashboardReturn {
     runProtected: auth.runProtected as <T>(action: () => Promise<T>) => Promise<T | void>,
     capabilities: auth.capabilities,
     mutationsAllowed: auth.mutationsAllowed,
+    isStationMode: auth.isStationMode,
     setMachines: machines.setMachines,
   });
 
@@ -494,6 +512,8 @@ export function useOeeDashboard(deps: OeeDashboardDeps): UseOeeDashboardReturn {
     isMqttModalOpen: ui.isMqttModalOpen,
     isAuthModalOpen: auth.isAuthModalOpen,
     authSession: auth.authSession,
+    stationSession: auth.stationSession,
+    isStationMode: auth.isStationMode,
     authError: auth.authError,
     labelableDowntimes: supplemental.labelableDowntimes,
     supplementalError: supplemental.supplementalError,

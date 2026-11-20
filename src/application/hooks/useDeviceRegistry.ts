@@ -9,6 +9,7 @@ import type { MachineMetadataPatch } from '../../domain/ports/IOeeBackend';
 import type { GetMachinesUseCase } from '../use-cases/GetMachinesUseCase';
 import type { ConfigureDeviceUseCase } from '../use-cases/ConfigureDeviceUseCase';
 import { canMutate } from '../capabilityGate';
+import { STATION_SENSITIVE_DENIAL } from '../stationMode';
 
 export interface DeviceRegistryDeps {
   useBackend: boolean;
@@ -17,6 +18,8 @@ export interface DeviceRegistryDeps {
   runProtected: <T>(action: () => Promise<T>) => Promise<T | void>;
   capabilities: import('../../domain/ports/IOeeBackend').CapabilityMap | null;
   mutationsAllowed: boolean | null;
+  /** E30 H30.4 (FAT-252): mode station — ubah konfigurasi ditolak (admin panel). */
+  isStationMode: boolean;
   setMachines: React.Dispatch<React.SetStateAction<MachineConfig[]>>;
 }
 
@@ -36,7 +39,7 @@ export interface DeviceRegistryApi {
 }
 
 export function useDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistryApi {
-  const { useBackend, configureDeviceUseCase, getMachinesUseCase, runProtected, capabilities, mutationsAllowed, setMachines } = deps;
+  const { useBackend, configureDeviceUseCase, getMachinesUseCase, runProtected, capabilities, mutationsAllowed, isStationMode, setMachines } = deps;
 
   const [isDeviceConfigModalOpen, setIsDeviceConfigModalOpen] = useState<boolean>(false);
   const [deviceRegistry, setDeviceRegistry] = useState<{ devices: DeviceRecord[]; machines: MachineRecord[] } | null>(null);
@@ -75,6 +78,10 @@ export function useDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistryApi {
   const closeDeviceConfigModal = useCallback(() => setIsDeviceConfigModalOpen(false), []);
 
   const saveDeviceMetadata = useCallback(async (deviceId: string, patch: { ipAddress?: string; firmwareVersion?: string }) => {
+    // E30 H30.4 (FAT-252): mode station — ubah konfigurasi perangkat adalah
+    // aksi sensitif; ditolak sebelum capability gate / fetch. Modal
+    // menampilkan pesan ini dari thrown error (actionError).
+    if (isStationMode) throw new Error(STATION_SENSITIVE_DENIAL);
     const gate = canMutate({ useBackend, mutationsAllowed, capabilities, key: 'device.update' });
     if (!gate.allowed) throw new Error(gate.reason);
     if (!useBackend) throw new Error('Konfigurasi perangkat hanya tersedia pada mode backend.');
@@ -83,9 +90,11 @@ export function useDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistryApi {
       const registry = await configureDeviceUseCase.loadRegistry();
       setDeviceRegistry(registry);
     });
-  }, [configureDeviceUseCase, runProtected, useBackend, useBackend, mutationsAllowed, capabilities]);
+  }, [configureDeviceUseCase, runProtected, useBackend, useBackend, mutationsAllowed, capabilities, isStationMode]);
 
   const saveMachineMetadata = useCallback(async (machineId: string, patch: MachineMetadataPatch) => {
+    // E30 H30.4 (FAT-252): lihat saveDeviceMetadata.
+    if (isStationMode) throw new Error(STATION_SENSITIVE_DENIAL);
     const gate = canMutate({ useBackend, mutationsAllowed, capabilities, key: 'machine.update' });
     if (!gate.allowed) throw new Error(gate.reason);
     if (!useBackend) throw new Error('Konfigurasi mesin hanya tersedia pada mode backend.');
@@ -94,9 +103,11 @@ export function useDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistryApi {
       const registry = await configureDeviceUseCase.loadRegistry();
       setDeviceRegistry(registry);
     });
-  }, [configureDeviceUseCase, runProtected, useBackend, useBackend, mutationsAllowed, capabilities]);
+  }, [configureDeviceUseCase, runProtected, useBackend, useBackend, mutationsAllowed, capabilities, isStationMode]);
 
   const bindDeviceToMachine = useCallback(async (machineId: string, deviceId: string) => {
+    // E30 H30.4 (FAT-252): lihat saveDeviceMetadata.
+    if (isStationMode) throw new Error(STATION_SENSITIVE_DENIAL);
     const gate = canMutate({ useBackend, mutationsAllowed, capabilities, key: 'machine.update' });
     if (!gate.allowed) throw new Error(gate.reason);
     if (!useBackend) throw new Error('Binding perangkat hanya tersedia pada mode backend.');
@@ -109,9 +120,11 @@ export function useDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistryApi {
       setDeviceRegistry(registry);
       setMachines(machineList);
     });
-  }, [configureDeviceUseCase, getMachinesUseCase, runProtected, setMachines, useBackend, useBackend, mutationsAllowed, capabilities]);
+  }, [configureDeviceUseCase, getMachinesUseCase, runProtected, setMachines, useBackend, useBackend, mutationsAllowed, capabilities, isStationMode]);
 
   const unbindDeviceFromMachine = useCallback(async (machineId: string) => {
+    // E30 H30.4 (FAT-252): lihat saveDeviceMetadata.
+    if (isStationMode) throw new Error(STATION_SENSITIVE_DENIAL);
     const gate = canMutate({ useBackend, mutationsAllowed, capabilities, key: 'machine.update' });
     if (!gate.allowed) throw new Error(gate.reason);
     if (!useBackend) throw new Error('Unbind perangkat hanya tersedia pada mode backend.');
@@ -124,7 +137,7 @@ export function useDeviceRegistry(deps: DeviceRegistryDeps): DeviceRegistryApi {
       setDeviceRegistry(registry);
       setMachines(machineList);
     });
-  }, [configureDeviceUseCase, getMachinesUseCase, runProtected, setMachines, useBackend, useBackend, mutationsAllowed, capabilities]);
+  }, [configureDeviceUseCase, getMachinesUseCase, runProtected, setMachines, useBackend, useBackend, mutationsAllowed, capabilities, isStationMode]);
 
   return {
     isDeviceConfigModalOpen,

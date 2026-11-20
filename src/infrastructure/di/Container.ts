@@ -67,6 +67,9 @@ export interface AppContainer {
   useBackend: boolean;
   /** Kiosk station binding dari env (composition root satu-satunya pembaca env). */
   stationIdEnv: string;
+  /** E30 H30.1: token station env (VITE_API_TOKEN) tersedia — Bearer
+      fallback httpClient; B30.1 kelak menggantinya kredensial per-station. */
+  stationTokenPresent: boolean;
 
   // Ports / Repositories (lane depends on useBackend flag)
   machineRepository: IMachineRepository;
@@ -181,6 +184,7 @@ export function createContainer(): AppContainer {
   return {
     useBackend,
     stationIdEnv: env.stationIdEnv,
+    stationTokenPresent: env.apiToken.trim().length > 0,
     machineRepository,
     alarmRepository,
     themeStorage,

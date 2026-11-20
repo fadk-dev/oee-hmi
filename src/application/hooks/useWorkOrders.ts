@@ -16,6 +16,7 @@ import type {
 import type { GetMachinesUseCase } from '../use-cases/GetMachinesUseCase';
 import type { ListWorkOrdersUseCase } from '../use-cases/ListWorkOrdersUseCase';
 import { canMutate } from '../capabilityGate';
+import { STATION_SENSITIVE_DENIAL } from '../stationMode';
 import { useWorkOrderAckWait } from './useWorkOrderAckWait';
 
 export interface WorkOrdersDeps {
@@ -28,6 +29,8 @@ export interface WorkOrdersDeps {
   runProtected: <T>(action: () => Promise<T>) => Promise<T | void>;
   capabilities: import('../../domain/ports/IOeeBackend').CapabilityMap | null;
   mutationsAllowed: boolean | null;
+  /** E30 H30.4 (FAT-252): mode station — batalkan WO ditolak (admin panel). */
+  isStationMode: boolean;
   setMachines: React.Dispatch<React.SetStateAction<MachineConfig[]>>;
 }
 
@@ -57,7 +60,7 @@ export interface WorkOrdersApi {
 }
 
 export function useWorkOrders(deps: WorkOrdersDeps): WorkOrdersApi {
-  const { useBackend, currentDeviceId, currentTotalCount, listWorkOrdersUseCase, getMachinesUseCase, runProtected, capabilities, mutationsAllowed, setMachines } = deps;
+  const { useBackend, currentDeviceId, currentTotalCount, listWorkOrdersUseCase, getMachinesUseCase, runProtected, capabilities, mutationsAllowed, isStationMode, setMachines } = deps;
 
   const [isProductionSetupModalOpen, setIsProductionSetupModalOpen] = useState<boolean>(false);
   const [pendingWorkOrders, setPendingWorkOrders] = useState<WorkOrderListItem[]>([]);
@@ -185,6 +188,13 @@ export function useWorkOrders(deps: WorkOrdersDeps): WorkOrdersApi {
   }, [currentTotalCount, getMachinesUseCase, listWorkOrdersUseCase, runProtected, setMachines, useBackend, useBackend, mutationsAllowed, capabilities]);
 
   const cancelWorkOrder = useCallback(async (woId: string, reason?: string) => {
+    // E30 H30.4 (FAT-252): mode station — batalkan WO adalah aksi sensitif
+    // (butuh otorisasi supervisor); ditolak di application layer sebelum
+    // capability gate / fetch. Supervisor badge/PIN butuh backend (B30.1/
+    // B30.2) — belum ada; jangan ditebak, arahkan ke admin panel. Tombol
+    // Cancel TIDAK dihapus (layout live monitor beku); modal menampilkan
+    // pesan ini dari productionSetupError / thrown error.
+    if (isStationMode) { setProductionSetupError(STATION_SENSITIVE_DENIAL); throw new Error(STATION_SENSITIVE_DENIAL); }
     const gate = canMutate({ useBackend, mutationsAllowed, capabilities, key: 'work_order.cancel' });
     if (!gate.allowed) { setProductionSetupError(gate.reason); throw new Error(gate.reason); }
     if (!useBackend) throw new Error('Cancel work order hanya tersedia pada mode backend.');
@@ -201,7 +211,7 @@ export function useWorkOrders(deps: WorkOrdersDeps): WorkOrdersApi {
     } finally {
       setProductionSetupBusy(false);
     }
-  }, [getMachinesUseCase, listWorkOrdersUseCase, runProtected, setMachines, useBackend, useBackend, mutationsAllowed, capabilities]);
+  }, [getMachinesUseCase, listWorkOrdersUseCase, runProtected, setMachines, useBackend, useBackend, mutationsAllowed, capabilities, isStationMode]);
 
   // unit 002 FR-004: validate 4 zona berurutan (error per zona) → initiate.
   // initiate-from-zones backend SUDAH dispatch (MQTT config + watchdog tx);

@@ -1,14 +1,17 @@
 // /src/application/hooks/useAuthSession.ts
 // Focused hook: operator PASSWORD session (020/spec 044) + station context +
 // rotation gate (spec 043) + sliding refresh (G13) + capability/access-mode
-// projection (FR-007/008 fetch; gating aksi = fase 3).
+// projection (FR-007/008 fetch; gating aksi = fase 3) + E30 station session
+// (FAT-249/250: kiosk tanpa login operator — sesi kredensial station).
 // LAYER RULES: domain ports + React only — no infrastructure/*, no seeds, no DOM.
 // Presentation injects collaborators via the args object.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AccessMode, AuthSession, CapabilityMap, IAuthGateway } from '../../domain/ports/IOeeBackend';
 import { isTokenExpiringSoon } from '../authToken';
 import { pickStationId } from '../stationContext';
+import { resolveStationSession, STATION_CREDENTIAL_INVALID } from '../stationMode';
+import type { StationSession } from '../stationMode';
 
 const REFRESH_INTERVAL_MS = 300_000; // FR-006: refresh berkala ≤ 5 menit selama sesi aktif
 
@@ -17,6 +20,9 @@ export interface AuthSessionDeps {
   useBackend: boolean;
   /** env VITE_STATION_ID (deployment kiosk), diinject composition root. */
   stationIdEnv: string;
+  /** E30 H30.1: token station env (VITE_API_TOKEN) tersedia — diinject
+      composition root (Container membaca env.apiToken). */
+  stationTokenPresent: boolean;
   /** Query ?station= (commissioning); presentation membaca URL. */
   getQueryStationId?: () => string | null;
   /** deviceId terdaftar (registry); [] = belum termuat → station tak dikirim. */
@@ -29,6 +35,10 @@ export type AuthMode = 'login' | 'change-password';
 
 export interface AuthSessionApi {
   authSession: AuthSession | null;
+  /** E30 H30.1: sesi station (kiosk tanpa login); null = bukan mode station. */
+  stationSession: StationSession | null;
+  /** E30 H30.1: true bila stationSession aktif. */
+  isStationMode: boolean;
   authError: string;
   isAuthModalOpen: boolean;
   authMode: AuthMode;
@@ -65,7 +75,7 @@ function errorRetryAfter(err: unknown): number | null {
 }
 
 export function useAuthSession(deps: AuthSessionDeps): AuthSessionApi {
-  const { authGateway, useBackend, stationIdEnv, getQueryStationId, getRegisteredDeviceIds, onAuthenticated } = deps;
+  const { authGateway, useBackend, stationIdEnv, stationTokenPresent, getQueryStationId, getRegisteredDeviceIds, onAuthenticated } = deps;
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [authMode, setAuthMode] = useState<AuthMode>('login');
@@ -76,6 +86,21 @@ export function useAuthSession(deps: AuthSessionDeps): AuthSessionApi {
   const [mutationsAllowed, setMutationsAllowed] = useState<boolean | null>(null);
   const pendingProtectedActionRef = useRef<(() => Promise<unknown>) | null>(null);
   const rotationOperatorRef = useRef<string>('');
+
+  // E30 H30.1 (FAT-249): sesi station = token station env + stationId
+  // tervalidasi registry. Pure derivation (resolveStationSession) — muncul
+  // begitu registry termuat, hilang bila registry kosong (fail-closed).
+  // getRegisteredDeviceIds identitasnya berubah tiap render parent — memo
+  // dihitung ulang tiap render; murah (pure) dan selalu segar.
+  const stationSession = useMemo<StationSession | null>(() => resolveStationSession({
+    useBackend,
+    stationTokenPresent,
+    stationId: pickStationId(
+      [getQueryStationId?.(), authGateway.getStationId(), stationIdEnv],
+      getRegisteredDeviceIds(),
+    ),
+  }), [useBackend, stationTokenPresent, getQueryStationId, authGateway, stationIdEnv, getRegisteredDeviceIds]);
+  const isStationMode = stationSession !== null;
 
   // Countdown 429 (FR-003): backend satu-satunya sumber throttle.
   useEffect(() => {
@@ -90,8 +115,10 @@ export function useAuthSession(deps: AuthSessionDeps): AuthSessionApi {
   }, []);
 
   const hasAuthToken = useCallback((): boolean => {
-    return !useBackend || !!authGateway.getToken();
-  }, [authGateway, useBackend]);
+    // E30 H30.1: mode station — Bearer ada via env fallback httpClient
+    // (VITE_API_TOKEN), walau tanpa token sesi operator tersimpan.
+    return !useBackend || stationSession !== null || !!authGateway.getToken();
+  }, [authGateway, stationSession, useBackend]);
 
   const refreshProjection = useCallback(() => {
     if (!useBackend) return;
@@ -167,6 +194,20 @@ export function useAuthSession(deps: AuthSessionDeps): AuthSessionApi {
   }, [authGateway, authSession, loginWithPassword]);
 
   const runProtected = useCallback(async <T,>(action: () => Promise<T>): Promise<T | void> => {
+    // E30 H30.1 (FAT-249): mode station — aksi jalan langsung, TIDAK pernah
+    // parkir di modal login; token station (env) tidak punya refresh
+    // sliding operator. 401 = kredensial station invalid → pesan jujur
+    // (re-commissioning), error dilempar ke pemanggil (modal menampilkannya).
+    if (stationSession) {
+      try {
+        await action();
+      } catch (err) {
+        if (isUnauthorizedError(err)) setAuthError(STATION_CREDENTIAL_INVALID);
+        throw err;
+      }
+      return;
+    }
+
     if (useBackend && !hasAuthToken()) {
       pendingProtectedActionRef.current = action;
       parkForLogin('');
@@ -211,11 +252,13 @@ export function useAuthSession(deps: AuthSessionDeps): AuthSessionApi {
       }
       throw err;
     }
-  }, [authGateway, authSession, forceLogout, hasAuthToken, isUnauthorizedError, parkForLogin, parkForRotation, refreshProjection, useBackend]);
+  }, [authGateway, authSession, forceLogout, hasAuthToken, isUnauthorizedError, parkForLogin, parkForRotation, refreshProjection, stationSession, useBackend]);
 
-  // FR-006: refresh berkala selama sesi aktif (HMI idle panjang tidak mati mendadak).
+  // FR-006: refresh berkala selama sesi OPERATOR aktif (HMI idle panjang
+  // tidak mati mendadak). E30 H30.1: interval ini HANYA untuk sesi operator —
+  // mode station tidak punya token sesi untuk di-refresh.
   useEffect(() => {
-    if (!useBackend || !authSession) return;
+    if (!useBackend || !authSession || stationSession) return;
     const t = setInterval(() => {
       authGateway.refreshSession()
         .then((renewed) => {
@@ -233,7 +276,7 @@ export function useAuthSession(deps: AuthSessionDeps): AuthSessionApi {
         });
     }, REFRESH_INTERVAL_MS);
     return () => clearInterval(t);
-  }, [authGateway, authSession, forceLogout, isUnauthorizedError, parkForLogin, refreshProjection, useBackend]);
+  }, [authGateway, authSession, forceLogout, isUnauthorizedError, parkForLogin, refreshProjection, stationSession, useBackend]);
 
   const closeAuthModal = useCallback(() => {
     setIsAuthModalOpen(false);
@@ -244,14 +287,22 @@ export function useAuthSession(deps: AuthSessionDeps): AuthSessionApi {
   }, []);
 
   const openAuthModal = useCallback(() => {
+    // E30 H30.2 (FAT-250): kiosk mode station — modal PIN tidak pernah dibuka.
+    if (stationSession) return;
     setAuthError('');
     setAuthMode('login');
     setIsAuthModalOpen(true);
-  }, []);
+  }, [stationSession]);
 
   const notifyUnauthorized = useCallback(() => {
+    // E30 H30.2 (FAT-250): mode station — 401 boot bukan sesi operator yang
+    // kedaluwarsa; tampilkan pesan jujur, jangan buka modal login.
+    if (stationSession) {
+      setAuthError(STATION_CREDENTIAL_INVALID);
+      return;
+    }
     parkForLogin('Sesi operator diperlukan atau sudah kedaluwarsa.');
-  }, [parkForLogin]);
+  }, [parkForLogin, stationSession]);
 
   const logoutOperator = useCallback(() => {
     forceLogout();
@@ -259,6 +310,8 @@ export function useAuthSession(deps: AuthSessionDeps): AuthSessionApi {
 
   return {
     authSession,
+    stationSession,
+    isStationMode,
     authError,
     isAuthModalOpen,
     authMode,

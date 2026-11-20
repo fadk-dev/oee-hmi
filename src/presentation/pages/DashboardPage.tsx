@@ -69,6 +69,7 @@ export const DashboardPage: React.FC = () => {
     authGateway: container.authGateway,
     useBackend: container.useBackend,
     stationIdEnv: container.stationIdEnv,
+    stationTokenPresent: container.stationTokenPresent,
     getQueryStationId: () => new URLSearchParams(location.search).get('station'),
   }), [container, location.search]);
 
